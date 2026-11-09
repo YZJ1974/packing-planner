@@ -23,7 +23,7 @@ fi
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo ""
-  echo "[错误] 未找到 python3。请先安装 Python 3.10 或更高版本。"
+  echo "[错误] 未找到 python3。请先安装 Python 3.11 或更高版本。"
   echo "可在终端执行: python3 --version"
   echo ""
   read -r -p "按回车键退出..."

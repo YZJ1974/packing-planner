@@ -101,7 +101,8 @@ def render_svg(box,view='perspective',lifting=False,options=None,label='DRAFT / 
             cg.append(sum(float(q.get('weight_kg') or 0)*(q[axis]+float(q.get('cg_local_'+axis) if q.get('cg_local_'+axis) is not None else q[dim]/2)) for q in ps)/total)
         point=P(*cg);star=' '.join(f"{point[0]+(9 if k%2==0 else 4)*math.cos(-math.pi/2+k*math.pi/5):.2f},{point[1]+(9 if k%2==0 else 4)*math.sin(-math.pi/2+k*math.pi/5):.2f}" for k in range(10))
         node('polygon',points=star,fill='#ef4444',stroke='#7f1d1d')
-        text(26,647,f'{'设备/木箱重心（未含柔性袋装）' if box.get('flexible_fill') else '货物合成重心'}：X={cg[0]:.0f}，Y={cg[1]:.0f}，Z={cg[2]:.0f} mm（不含{"车辆" if truck else "柜体"}；未知单件CG按形心）',11)
+        scope='设备/木箱重心（未含柔性袋装）' if box.get('flexible_fill') else '货物合成重心'
+        text(26,647,f'{scope}：X={cg[0]:.0f}，Y={cg[1]:.0f}，Z={cg[2]:.0f} mm（不含{"车辆" if truck else "柜体"}；未知单件CG按形心）',11)
     if lifting:
         for i,(q,points,hook) in enumerate(rigs):
             delta=H-hook[2];text(26,675+i*24,f"#{q['seq']} {q['name']} · {q['weight_kg']:g} kg · 吊钩Z={hook[2]:.0f}mm · 净高{'余量' if delta>=0 else '超出'} {abs(delta):.0f}mm · 索力/吊点强度未验算",11)
