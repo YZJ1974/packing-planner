@@ -1,0 +1,16 @@
+const fs=require('fs'),path=require('path'),assert=require('assert');
+const source=fs.readFileSync(path.join(__dirname,'../app/static/app.js'),'utf8');
+const template=source.match(/li\.textContent=(`[^`]+`)/);
+assert(template,'loading step instructions must be displayed');
+const format=new Function('s','before','return '+template[1]);
+const step={order:1,quantity:12,volume_m3:1.5,zone:{x:2000,y:0,z:0,l:1000,w:1000},kind:'floor',install_later:[8,9]};
+const text=format(step,'设备编号 1、2 就位并固定后');
+for(const required of ['设备编号 1、2','12包','1.500m³','2000～3000mm','之后再装设备编号 8、9','800mm宽/1800mm高'])assert(text.includes(required),required);
+assert(format({...step,install_later:[]},'空柜').includes('无后续设备'));
+assert(format({...step,kind:'verified_crate_top',support_sequence:3,top_budget_kg:84},'设备就位后').includes('木箱3顶区，剩余顶载限值84kg'));
+assert.equal((source.match(/珠光砂装载步骤（规划，需现场确认）/g)||[]).length,1,'container-only steps must not leak into crate renderer');
+console.log('PASS: loading-step text shows preceding equipment, later equipment, zone, quantity, corridor, and verified support budget');
+const declared=format({...step,kind:'user_confirmed_top',support_sequence:4,support_sequences:[4,5],top_budget_kg:null,required_delivery_reach_mm:3000,delivery_headroom_mm:198,outside_work_depth_mm:700},'设备就位后');
+for(const text of ['用户确认的设备顶部袋区','设备编号 4、5','无另设数值顶载','3.00m','198mm','柜门外延伸 700mm','不要求人员站入最终袋区'])assert(declared.includes(text),text);
+assert(!declared.includes('nullkg'));
+console.log('PASS: user-declared top instructions distinguish body access, delivery reach/headroom, and absent numeric rating');

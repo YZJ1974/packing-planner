@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能装箱规划器 V5.8.28</title>
+<link rel="stylesheet" href="/static/style.css?v=5.8.28-transport-entry">
+</head>
+<body data-evidence-closed="{{ 0 if physical_evidence_reviews else 1 }}" data-evidence-count="{{ physical_evidence_reviews|length }}">
+<div class="shell">
+  <header>
+    <div>
+      <h1>智能装箱规划器</h1>
+      <p>材料清单 → 自动分箱 → 规划校核 → 风险分级 → 集装箱3D优化 → 人工确认</p>
+    </div>
+    <div class="badge">V5.8.28 · 数据语义与校核一致性</div>
+  </header>
+<nav class="workflow-nav" aria-label="常用工作流程"><a href="#uploadMaterials">1 导入材料</a><a href="#containerSelection">2 选柜 / 选货车</a><a href="#planSettings">规划参数</a><a href="#crateDetailSection">3 木箱总览</a><a href="#containerPreview">4 装柜 / 吊点图</a><a href="#exportDocuments">5 导出资料</a><button type="button" id="toggleAllEngineering" aria-pressed="false">展开详细参数</button></nav>
+<section class="panel transport-entry" aria-label="选择运输方式">
+  <div><h2>选择运输方式</h2><p>当前：<b>{{ '货车运输' if vehicle_mode=='truck' else '集装箱运输' }}</b>。先选运输方式，再选柜型或车型及数量。</p></div>
+  <div class="vehicle-tabs">
+    <form action="/vehicle-mode" method="post"><input type="hidden" name="mode" value="container"><button class="{{ 'smart-run' if vehicle_mode!='truck' else 'ghost-action' }}" type="submit">集装箱运输 · 选柜型和数量</button></form>
+    <form action="/vehicle-mode" method="post"><input type="hidden" name="mode" value="truck"><button class="{{ 'smart-run' if vehicle_mode=='truck' else 'ghost-action' }}" type="submit">货车运输 · 选车型和辆数</button></form>
+    <a class="ghost-action" href="/vehicles">设置货车尺寸与载荷</a>
+  </div>
+  <p class="note">首次使用货车：填写实车尺寸和有效载荷并启用，保存后选择车型、辆数，再重新配载。</p>
+</section>
+<details class="ui-fold boundary-fold"><summary>静态规划与工程凭证分别校核 <small>查看使用边界</small></summary>  <div class="credibility-banner"><b>V5.8.28 使用边界：</b>软件不会OCR读取凭证正文；凭证数值由责任人查看原文件后人工录入，软件只比较“人工录入核对值 ↔ 当前系统值”，不代表软件自动读懂或验证凭证正文。本软件用于包装规划、装箱/装柜优化和风险筛查，不替代结构强度、绑扎、吊装、动态载荷、适航或发运签证。“静态规划校核通过”仅表示当前模型内未触发已实现的约束，不表示工程输入凭证已闭环。<b>箱级/装柜数据对照版</b>只表示责任人登记的凭证可见值与当前系统数据一致，并通过相应软件门禁；软件未自动读取凭证正文，仍需包装/运输责任人审批。它不是结构、绑扎、吊装、适航或法律签证。</div></details>
+  <section class="perf-mode-bar"><div><b>{{ 'ASU 项目约束已启用' if asu_profile.enabled else '通用规划模式' }}</b><small>{% if asu_profile.enabled %}设备/木箱柜壁各100mm{% if rec.options and rec.options[0].flexible_volume_only %}；珠光砂按项目确认条件规划设备顶部及落地装袋区{% endif %} · 海运/板材/管道规则 · {{ asu_pending_entities }}个单元有待办（{{ asu_issue_count }}条细项）；规划校核通过不等于ASU符合或发运放行。{% else %}可在项目标准页启用 ASU K-BX 1002 约束。{% endif %}</small></div><a href="/asu-project" class="ghost-btn">项目标准与资料复核</a></section>
+  <section class="perf-mode-bar">
+    <div><b>计算模式：</b><span class="perf-badge {{ 'deep' if deep_mode else 'fast' }}">{{ '深度优化' if deep_mode else '快速模式' }}</span>
+      <small>{{ '运行全局压柜、混合柜型、成本比较和逐箱深度模拟（有限启发式搜索，不保证全局最优）。' if deep_mode else '优先快速生成可用方案；不自动运行高成本全局搜索。' }}</small></div>
+    <div class="perf-actions">
+      {% if deep_mode %}<a href="/" class="ghost-btn">返回快速模式</a>{% else %}<a href="/?deep=1" class="smart-run perf-deep-btn">运行深度优化</a>{% endif %}
+    </div>
+  </section>
+
+  {% if error %}
+  <div class="alert error"><strong>导入失败：</strong>{{ error }}</div>
+  {% elif message %}
+  <div class="alert success"><strong>导入完成：</strong>{{ message }}</div>
+  {% endif %}
+
+  <section class="kpis">
+    <div class="kpi"><span>材料条目</span><strong>{{ items|length }}</strong></div>
+    <div class="kpi"><span>木箱数量</span><strong>{{ crates|length }}</strong></div>
+    <div class="kpi"><span>裸装条目</span><strong>{{ items|selectattr("package_type","equalto","裸装")|list|length }}</strong></div>
+    <div class="kpi"><span>推荐方案</span><strong>{{ rec.options[0].label if rec.options else "待计算" }}</strong></div>
+  </section>
+
+  {% include 'selected_fleet.html' %}
+
+  <section class="dual-status-strip" aria-label="规划状态与工程凭证状态">
+    <div class="dual-status-intro"><b>状态必须分开阅读：</b>“静态规划校核”回答当前模型能否接受该布局；“工程输入凭证一致性”回答已声明确认的工程输入是否已有附件并完成手填对照。两者不是同一绿灯。</div>
+    <div class="dual-status-grid">
+      <div class="dual-status-card neutral"><span>静态规划校核</span><strong>按木箱 / 柜 / 方案独立显示</strong><small>通过仅代表当前静态模型内未触发已实现的碰撞、边界、载荷、重心等约束。</small></div>
+      <div class="dual-status-card {{ 'ok' if not physical_evidence_reviews else 'warn' }}"><span>工程输入凭证一致性</span><strong>{% if physical_evidence_reviews %}未闭环 · NOT FOR RELEASE{% else %}当前已声明确认项已闭环{% endif %}</strong><small>{% if physical_evidence_reviews %}当前有 {{ physical_evidence_reviews|length }} 项附件/人工对照未闭环；不阻止 DRAFT 规划，但正式资料必须带禁发标识。{% else %}仅表示附件、哈希、对象绑定与人工核对值一致；不表示软件读懂或验证了计算书/CG图正文。{% endif %}</small></div>
+    </div>
+  </section>
+
+  <section id="uploadMaterials" class="panel upload-panel">
+    <div class="section-head">
+      <div>
+        <h2>① 上传材料清单</h2>
+        <p>直接导入 Excel / CSV。对含“需要采购”列的冷箱材料清单：管道按米数读取；弯头、三通、缩接、管帽等按个数读取；5083材质强制木箱包装。</p>
+      </div>
+      <a class="ghost-btn" href="/material-template.xlsx">下载标准Excel模板</a>
+    </div>
+    {% if shipment_source %}
+    <div class="recognition-box" role="status" {% if shipment_source.issues %}style="border:2px solid #dc2626;background:#fff1f2"{% endif %}>
+      <strong>当前清单来源：{{ shipment_source.filename or '历史材料，未登记来源' }}</strong>
+      {% if shipment_source.sha256 %}<br><small>文件指纹：{{ shipment_source.sha256[:16] }} · 原表 {{ shipment_source.source_rows }} 行</small>{% endif %}
+      {% for issue in shipment_source.issues %}<br><b>{{ issue }}</b>{% endfor %}
+      {% if shipment_source.issues %}<br>旧排布和旧报告不能作为本次清单结果。请使用“仅使用本次清单”重新导入；来源核对通过前，装箱图和清单导出已暂停。{% else %}<br>{{ shipment_source.note or '已登记本次清单及导入材料，导出时自动复核名称、数量、尺寸和重量。' }}{% endif %}
+    </div>
+    {% endif %}
+    {% if bag_permission_status %}
+    <div class="recognition-box" role="status" {% if bag_permission_status.stale %}style="border:2px solid #d97706;background:#fffbeb"{% endif %}>
+      <strong>珠光砂顶部装袋：{{ bag_permission_status.approved }} / {{ bag_permission_status.total }} 个设备单元已匹配许可</strong><br>{{ bag_permission_status.note }}
+    </div>
+    {% endif %}
+    <form id="uploadForm" action="/upload-materials" method="post" enctype="multipart/form-data">
+      <label class="drop-zone" id="dropZone">
+        <input id="materialFile" name="file" type="file" accept=".xlsx,.xlsm,.csv" required hidden>
+        <div class="upload-icon">⇧</div>
+        <div><strong>点击选择材料清单</strong>，或把文件拖到这里</div>
+        <small>支持 .xlsx / .xlsm / .csv，最大20MB；旧版 .xls 请先另存为 .xlsx</small>
+        <div class="file-name" id="fileName">尚未选择文件</div>
+      </label>
+      <div class="import-options">
+        <label><input type="radio" name="mode" value="append"> 追加到现有材料（保留旧货物，可能混入历史记录）</label>
+        <label><input type="radio" name="mode" value="replace" checked> 仅使用本次清单（替换材料和木箱，自动备份旧数据）</label>
+        <button class="import-btn" type="submit">开始导入材料清单</button>
+      </div>
+    </form>
+    <div class="recognition-box">
+      <strong>系统可自动识别：</strong>
+      物料名称 / 材料名称、数量、长/宽/高，或“外形尺寸”一列、单件重量或总重量、包装方式（木箱/裸装）、可叠放、可旋转。
+      <br><b>强制包装规则：</b>材质/牌号中识别到 <b>5083</b> 时，无论原表包装方式如何，系统统一按 <b>木箱包装</b> 处理。
+      <br><span>如果只有“总重量”，系统会按数量自动换算单件重量；“外形尺寸”可写成 3200×1800×1600。φ2000×5320 mm 按圆柱卧放外包络5320×2000×2000 mm识别；铁桶/桶装的φ600×1000 mm按立放600×600×1000 mm识别。重量使用独立重量列，支座、托盘及包装需另加。</span>
+    </div>
+  </section>
+
+  <details class="panel engineering-data-panel ui-fold section-fold" id="projectDimensions"><summary>项目尺寸库与尺寸凭证</summary><div class="fold-content">
+    <div class="section-head"><div><h2>①A 尺寸可信度与项目尺寸库</h2><p>A=已绑定格式有效凭证并完成“人工录入的凭证可见值 ↔ 当前系统值”对照；B1=上传/供应商声明，B2=项目/类型数据，B3=标准换算；C=规划估算。箱级/装柜数据对照版只接受A级凭证登记+人工对照记录。</p></div><a class="ghost-btn" href="/dimension-override-template.csv">下载尺寸库CSV模板</a></div>
+    <div class="trust-kpis"><div><span>A级凭证尺寸</span><b>{{ size_counts.A }}</b></div><div><span>B级标准尺寸</span><b>{{ size_counts.B }}</b></div><div><span>C级估算尺寸</span><b>{{ size_counts.C }}</b></div><div><span>项目覆盖库</span><b>{{ dimension_overrides|length }}</b></div></div>
+    <form action="/dimension-overrides" method="post" enctype="multipart/form-data" class="smart-grid compact-grid">
+      <label><span>材质</span><input name="material" value="5083" required></label><label><span>类别</span><select name="category"><option>弯头</option><option>三通</option><option>异径</option><option>管帽</option></select></label>
+      <label><span>DN规格</span><input name="dn_spec" placeholder="300 或 150x100" required></label><label><span>L / mm</span><input name="length_mm" type="number" min="1" required></label><label><span>W / mm</span><input name="width_mm" type="number" min="1" required></label><label><span>H / mm</span><input name="height_mm" type="number" min="1" required></label>
+      <label><span>来源</span><input name="source" value="供应商图纸/制造图"></label><label class="form-check"><input name="verified" type="checkbox" value="1"><span>申请保存为A3类型/项目批准数据</span></label><label><span>A级凭证</span><input name="evidence" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.xlsx,.xls,.csv,.docx,.txt"></label><label><span>凭证核对 L/mm</span><input name="evidence_length_mm" type="number" step="0.1" min="0" placeholder="从凭证读取"></label><label><span>凭证核对 W/mm</span><input name="evidence_width_mm" type="number" step="0.1" min="0" placeholder="从凭证读取"></label><label><span>凭证核对 H/mm</span><input name="evidence_height_mm" type="number" step="0.1" min="0" placeholder="从凭证读取"></label><label><span>凭证备注</span><input name="evidence_note" placeholder="图纸号/测量记录号/批准信息"></label><button class="smart-run" type="submit">保存尺寸记录</button>
+    </form>
+    <form action="/dimension-overrides/upload" method="post" enctype="multipart/form-data" class="inline-upload"><input type="file" name="file" accept=".csv" required><button type="submit">批量导入尺寸CSV</button></form>
+    <div class="inline-form"><form action="/apply-dimension-library" method="post"><button type="submit" class="ghost-action">仅应用项目尺寸库</button></form><form action="/apply-standard-estimates" method="post"><button type="submit" class="ghost-action">仅为C级缺省项填GB/T估算</button></form><span>GB/T估算不会覆盖已有A/B级尺寸；项目库与标准估算已彻底分开。</span></div>
+    {% if dimension_overrides %}<details><summary>查看项目尺寸覆盖库（{{ dimension_overrides|length }}条）</summary><div class="table-wrap"><table><thead><tr><th>材质</th><th>类别</th><th>DN</th><th>L×W×H</th><th>来源</th><th>确认</th></tr></thead><tbody>{% for d in dimension_overrides %}<tr><td>{{ d.material }}</td><td>{{ d.category }}</td><td>{{ d.dn_spec }}</td><td>{{ d.length_mm }}×{{ d.width_mm }}×{{ d.height_mm }}</td><td>{{ d.source }}</td><td>{% if d.verified and d.evidence_id and d.evidence_valid %}<b>A3·类型凭证已登记/人工核对一致</b> <a href="/evidence/{{ d.evidence_id }}">查看</a>{% else %}B级待凭证{% endif %}</td></tr>{% endfor %}</tbody></table></div></details>{% endif %}
+  </div></details>
+
+  <details class="panel cost-panel ui-fold section-fold" id="costParameters"><summary>运输与木箱成本参数</summary><div class="fold-content">
+    <div class="section-head"><div><h2>①B 运输与木箱成本参数</h2><p>开启后，系统优先比较“木箱成本 + 集装箱运费 + OOG附加费”的总成本，而不仅是柜数。</p></div><div class="smart-badge">成本决策</div></div>
+    <form action="/cost-settings" method="post" class="smart-grid compact-grid">
+      <label><span>成本优化</span><select name="enabled"><option value="0" {% if not cost_settings.enabled %}selected{% endif %}>关闭：仍按少柜优先</option><option value="1" {% if cost_settings.enabled %}selected{% endif %}>开启：总成本优先</option></select></label>
+      <label><span>币种</span><input name="currency" value="{{ cost_settings.currency }}"></label><label><span>木箱固定成本/箱</span><input name="crate_fixed" type="number" step="1" value="{{ cost_settings.crate_fixed }}"></label><label><span>木箱体积成本/m³</span><input name="crate_m3" type="number" step="1" value="{{ cost_settings.crate_m3 }}"></label><label><span>包装人工/箱</span><input name="crate_labor" type="number" step="1" value="{{ cost_settings.crate_labor }}"></label>
+      <label><span>20GP运费</span><input name="c20gp" type="number" value="{{ cost_settings['20GP'] }}"></label><label><span>40GP运费</span><input name="c40gp" type="number" value="{{ cost_settings['40GP'] }}"></label><label><span>40HQ运费</span><input name="c40hq" type="number" value="{{ cost_settings['40HQ'] }}"></label><label><span>20OT运费</span><input name="c20ot" type="number" value="{{ cost_settings['20OT'] }}"></label><label><span>40OT运费</span><input name="c40ot" type="number" value="{{ cost_settings['40OT'] }}"></label><label><span>OOG附加/件</span><input name="oog_each" type="number" value="{{ cost_settings.oog_each }}"></label><button class="smart-run" type="submit">保存并重新比较</button>
+    </form>
+    <div class="smart-note">这些默认值只是示例参数，必须用你们项目/货代实际报价替换后，成本结论才有商务意义。</div>
+  </div></details>
+
+  <details class="panel packing-export-panel ui-fold section-fold" id="exportDocuments"><summary>导出箱单、唛头与数据对照 <small>箱级门禁 {{ release_issues|length }} 项待处理 · 工程凭证 {{ physical_evidence_reviews|length }} 项待闭环</small></summary><div class="fold-content">
+    <div class="section-head">
+      <div>
+        <h2>①C 箱单模板与导出</h2>
+        <p>可上传你们自己的 Excel 箱单模板；未上传时使用系统默认模板。箱单按当前木箱、裸装/其它包装单元自动生成。</p>
+      </div>
+      <div class="packing-template-status"><span>当前模板</span><b>{{ packing_template_info.name }}</b></div>
+    </div>
+    <div class="release-gate-box">
+      <form action="/release-meta" method="post" class="smart-grid compact-grid">
+        <label><span>项目名称（数据对照版必填）</span><input name="project_name" value="{{ release_meta.project_name }}" placeholder="例如：H.26xxxx 项目"></label>
+        <label><span>单一责任确认人（数据对照版必填）</span><input name="approver" value="{{ release_meta.approver }}" placeholder="姓名"></label>
+        <button type="submit" class="ghost-action">保存数据对照信息</button>
+      </form>
+      <label><span>箱级文档导出模式</span><select id="documentExportMode"><option value="planning">规划版（DRAFT / 非签证依据）</option><option value="formal">箱级数据对照版（人工凭证值对照 / 仍需审批）</option></select></label>
+      <small>箱级数据对照版仅确认包装单元层级数据，不代表集装箱或运输确认；要求材料/木箱A级凭证与人工数值对照；装柜数据对照版在此基础上还要求实际柜参数凭证、无未保存手调、柜级静态规划校核通过，并确认当前求解器使用的规范柜参数与登记时完全一致。若需要整票归档，请使用“整票数据对照归档包”。</small>
+      {% if release_issues %}<div class="alert error"><strong>当前箱级数据对照门禁未通过：</strong>{{ release_issues[:6]|join('；') }}{% if release_issues|length > 6 %}；另有 {{ release_issues|length-6 }} 项…{% endif %}</div>{% else %}<div class="alert success"><strong>当前箱级数据门禁已通过。</strong>装柜数据对照版仍会在导出时复核实际柜参数、手调状态和柜级规划校核。</div>{% endif %}{% if physical_evidence_reviews %}<div class="alert warning"><strong>工程输入凭证未闭环：</strong>{{ physical_evidence_reviews[:6]|join('；') }}{% if physical_evidence_reviews|length > 6 %}；另有 {{ physical_evidence_reviews|length-6 }} 项…{% endif %}<br><small>这些数据仍可用于DRAFT规划，但正式装柜/整票对照资料将强制标记“工程复核未关闭_NOT_FOR_RELEASE”，直到附件与人工核对值闭环。</small></div>{% endif %}
+    </div>
+    <p class="note">V5.8.28审计记录采用本地SHA-256哈希链，可检测应用内记录被修改，但不是第三方数字签名/公证。<a href="/audit-chain/verify" target="_blank">验证当前哈希链</a> · <a href="/audit-bundle/export">导出离机证据审计包</a> · <button type="button" class="link-like-btn" id="exportShipmentPackageBtn">生成整票数据对照归档包</button></p><div class="smart-note"><b>本地证据链：</b>当前已登记凭证 {{ evidence_count }} 份。{% if audit_chain_problems %}<span style="color:#b91c1c"><b>检测到 {{ audit_chain_problems|length }} 项链/文件异常：</b>{{ audit_chain_problems|join("；") }}</span>{% else %}<span>哈希链与已登记凭证文件当前一致。</span>{% endif %}</div>
+    {% if release_audits %}<details class="release-audit-panel"><summary>最近数据对照版/整票资料包导出记录（{{ release_audits|length }}）</summary><div class="table-wrap"><table><thead><tr><th>时间</th><th>类型</th><th>项目</th><th>责任人</th><th>文件</th><th>SHA-256</th></tr></thead><tbody>{% for a in release_audits %}<tr><td>{{ a.created_at }}</td><td>{{ a.export_type }}</td><td>{{ a.project_name }}</td><td>{{ a.approver }}</td><td>{{ a.file_name }}</td><td><code>{{ a.file_sha256[:16] }}…</code></td></tr>{% endfor %}</tbody></table></div></details>{% endif %}
+    <div class="packing-export-grid">
+      <div class="packing-export-card">
+        <h3>箱单模板</h3>
+        <p>系统会识别模板中的“箱号/包装号、包装方式、材料/箱内内容、材质、数量、长/宽/高、净重、毛重、备注”等列；列顺序可以不同。</p>
+        <div class="packing-export-actions">
+          <a class="ghost-btn" href="/packing-list-template/default.xlsx">下载系统箱单模板</a>
+          {% if packing_template_info.custom %}
+          <form action="/packing-list-template/reset" method="post"><button type="submit" class="ghost-action">恢复默认模板</button></form>
+          {% endif %}
+        </div>
+        <form action="/packing-list-template/upload" method="post" enctype="multipart/form-data" class="packing-template-upload">
+          <input name="file" type="file" accept=".xlsx" required>
+          <button type="submit">上传箱单模板</button>
+        </form>
+      </div>
+      <div class="packing-export-card primary-card">
+        <h3>生成当前箱单</h3>
+        <p>生成全部木箱 + 裸装/其它包装单元的 Excel 箱单。木箱按箱号汇总，并带箱内内容、材质、尺寸、净重/毛重、尺寸/重量可信等级。</p>
+        <div class="packing-export-actions major-actions"><button type="button" class="packing-main-export" id="exportPackingListBtn">生成全部包装箱单 Excel</button><button type="button" class="ghost-btn unloaded-list-btn" id="exportUnloadedPackingTopBtn">未进集装箱箱单 Excel</button></div>
+        <small>如果已上传自定义模板，将按自定义模板的列顺序生成。</small>
+      </div>
+      <div class="packing-export-card shipping-mark-card">
+        <h3>木箱唛头 Word</h3>
+        <p>使用内置通用唛头模板。收货单位、合同名称等公共信息只需输入一次；每个木箱自动变化 CTN.NO.、箱内货物、尺寸、毛重和净重。</p>
+        <form action="/shipping-mark-common" method="post" class="mark-common-form"><label class="mark-consignee"><span>收货单位 / Consignee（所有唛头共用）</span><textarea name="consignee" rows="3">{{ shipping_mark_common.consignee }}</textarea></label><label><span>合同名称 / S/C Name（所有唛头共用）</span><input name="sc_name" value="{{ shipping_mark_common.sc_name }}"></label><label><span>合同号 / S/C NO.</span><input name="sc_no" value="{{ shipping_mark_common.sc_no }}"></label><label><span>发货日期 / Delivery date</span><input name="delivery_date" value="{{ shipping_mark_common.delivery_date }}" placeholder="YYYY-MM-DD"></label><label><span>发货地（中文）</span><input name="shipment_cn" value="{{ shipping_mark_common.shipment_cn }}"></label><label><span>Place of shipment</span><input name="shipment_en" value="{{ shipping_mark_common.shipment_en }}"></label><label><span>包装形式（中文）</span><input name="packing_cn" value="{{ shipping_mark_common.packing_cn }}"></label><label><span>Packing</span><input name="packing_en" value="{{ shipping_mark_common.packing_en }}"></label><label><span>供应商（中文）</span><input name="supplier_cn" value="{{ shipping_mark_common.supplier_cn }}"></label><label><span>Supplier</span><input name="supplier_en" value="{{ shipping_mark_common.supplier_en }}"></label><button type="submit" class="packing-main-export mark-save-common">保存唛头公共信息</button></form><div class="mark-template-status"><span>当前模板：</span><b>{{ shipping_mark_template_info.name }}</b></div>
+        <div class="packing-export-actions">
+          <a class="ghost-btn" href="/shipping-mark-template/default.docx">下载默认唛头模板</a>
+          <button type="button" class="packing-main-export mark-batch-btn" id="exportShippingMarksBtn">批量生成全部木箱唛头 Word</button>
+        </div>
+        <form action="/shipping-mark-template/upload" method="post" enctype="multipart/form-data" class="packing-template-upload">
+          <input name="file" type="file" accept=".docx" required>
+          <button type="submit">上传自定义唛头Word模板</button>
+        </form>
+        {% if shipping_mark_template_info.custom %}<form action="/shipping-mark-template/reset" method="post"><button type="submit" class="ghost-action">恢复默认唛头模板</button></form>{% endif %}
+      </div>
+    </div>
+  </div></details>
+
+  <section id="planSettings" class="panel smart-panel">
+    <div class="section-head">
+      <div>
+        <h2>② 木箱尺寸策略 + 一键规划</h2>
+        <p>支持两种模式：①固定木箱尺寸；②根据目标集装箱和当前材料量自动反推木箱尺寸。智能模式的目标是减少柜内空隙、降低柜数，并让木箱尺寸更适合集装箱的宽度/高度/长度分格。</p>
+      </div>
+      <div class="smart-badge">推荐：集装箱反推</div>
+    </div>
+    <form action="/smart-plan" method="post" class="smart-grid crate-strategy-form" onsubmit="return confirm('规划会重新生成现有木箱，并按材料数量重新分配。确认继续？')">
+      <label class="strategy-mode wide-label"><span>木箱尺寸模式</span>
+        <select name="crate_mode" id="crateMode">
+          <option value="container_aware" selected>智能推荐：根据集装箱 + 材料量反推</option>
+          <option value="fixed">固定尺寸：全部标准箱按输入尺寸</option>
+        </select>
+        <small>智能模式会搜索多组木箱最大包络，并用实际装柜结果评分。</small>
+      </label>
+      <label><span>目标集装箱</span>
+        <select name="target_container" id="targetContainer">
+          <option value="40HQ" selected>40HQ</option><option value="40GP">40GP</option><option value="20GP">20GP</option><option value="40OT">40OT</option><option value="20OT">20OT</option>
+        </select><small>智能模式以此箱型为主要优化目标</small>
+      </label>
+      <label><span>固定/上限木箱长</span><input name="max_crate_l" type="number" value="4000" min="500" step="50"><small>mm；固定模式=精确尺寸，智能模式仅作备用输入</small></label>
+      <label><span>固定/上限木箱宽</span><input name="max_crate_w" type="number" value="2200" min="500" step="50"><small>mm</small></label>
+      <label><span>固定/上限木箱高</span><input name="max_crate_h" type="number" value="2200" min="500" step="50"><small>mm</small></label>
+      <label><span>单箱最大毛重</span><input name="max_crate_gross" type="number" value="5000" min="100" step="100"><small>kg</small></label>
+      <label><span>货物装箱间隙（每侧）</span><input name="padding_mm" type="number" value="100" min="0" step="10"><small>mm</small></label>
+<details class="ui-fold planner-fold"><summary>高级规划参数 <small>利用率、清点上限、箱体自重、重心阈值</small></summary><div class="smart-grid fold-content">      <label><span>旧版体积系数</span><input name="tare_per_m3" type="number" value="{{ crate_weight_settings.legacy_kg_per_m3 if crate_weight_settings.legacy_kg_per_m3 is defined else 45 }}" min="0" step="5"><small>kg/m³；仅在“旧版体积系数法”时使用</small></label>
+      <label><span>合理利用率下限</span><input name="target_util_min" type="number" value="60" min="30" max="90" step="5"><small>%；低于此值优先缩箱/合箱</small></label>
+      <label><span>合理利用率上限</span><input name="target_util_max" type="number" value="80" min="40" max="95" step="5"><small>%；大型异形件不会硬塞到此值</small></label>
+      <label class="wide-label util-opt-toggle"><span>自动优化低利用率木箱</span><select name="optimize_utilization"><option value="1" selected>开启：允许同材质小/中件混装填空</option><option value="0">关闭：保持原分级策略</option></select><small>仍保留大件、重心、碰撞、边界和毛重约束。</small></label>
+      <label><span>长管木箱装箱策略</span><select name="long_pipe_mode"><option value="conservative">保守：空隙更大/重量更低</option><option value="standard" selected>标准：推荐</option><option value="aggressive">激进：尽量多根合箱</option></select><small>仅影响木箱内长直管；5083仍强制木箱。</small></label>
+      <label><span>长管每箱最多根数</span><input name="max_pipes_per_crate" type="number" value="0" min="0" step="1"><small>0=自动；可手工限制每箱根数</small></label>
+      <label><span>每箱最大总件数</span><input name="max_items_per_crate" type="number" value="30" min="0" step="1"><small>0=不限制；默认30件，避免现场难清点</small></label>
+      <label><span>每箱最大物料种类</span><input name="max_skus_per_crate" type="number" value="8" min="0" step="1"><small>0=不限制；默认8种，同规格尽量集中</small></label>
+      <label><span>木箱自重模型</span><select name="crate_weight_model"><option value="structural" {% if crate_weight_settings.model!='legacy' %}selected{% endif %}>结构分项计算（推荐）</option><option value="legacy" {% if crate_weight_settings.model=='legacy' %}selected{% endif %}>旧版体积系数法</option></select><small>结构法按板材、框架、滑木、横档、辅材逐项估算</small></label>
+      <label><span>箱板密度</span><input name="panel_density" type="number" value="{{ crate_weight_settings.panel_density|default(500) }}" min="300" max="900" step="10"><small>kg/m³；默认500</small></label>
+      <label><span>木方密度</span><input name="timber_density" type="number" value="{{ crate_weight_settings.timber_density|default(480) }}" min="300" max="900" step="10"><small>kg/m³；默认480</small></label>
+      <label><span>辅材比例</span><input name="hardware_pct" type="number" value="{{ crate_weight_settings.hardware_pct|default(4) }}" min="0" max="30" step="0.5"><small>%；钢带、钉/螺栓、薄膜等</small></label>
+      <label><span>水平CG复核阈值</span><input name="cg_review_pct" type="number" value="{{ crate_weight_settings.container_cg_review_pct|default(10) }}" min="0" max="49" step="1"><small>%；相对几何中心偏移</small></label>
+      <label><span>水平CG高风险阈值</span><input name="cg_high_risk_pct" type="number" value="{{ crate_weight_settings.container_cg_high_risk_pct|default(20) }}" min="1" max="50" step="1"><small>%；需负责人/包装工程确认</small></label>
+      <label><span>垂直CG复核阈值</span><input name="cg_z_review_pct" type="number" value="{{ crate_weight_settings.container_cg_z_review_pct|default(60) }}" min="1" max="99" step="1"><small>%箱高；超过提示高重心</small></label>
+      <label><span>垂直CG高风险阈值</span><input name="cg_z_high_risk_pct" type="number" value="{{ crate_weight_settings.container_cg_z_high_risk_pct|default(75) }}" min="2" max="100" step="1"><small>%箱高；高风险需工程确认</small></label>
+      <label><span>关键重件CG重量阈值</span><input name="critical_cg_weight_kg" type="number" value="{{ crate_weight_settings.critical_cg_weight_kg|default(500) }}" min="0" step="50"><small>kg；未确认真实CG且单件达到此重量时进入工程复核</small></label>
+      <label><span>关键重件CG占柜重阈值</span><input name="critical_cg_share_pct" type="number" value="{{ crate_weight_settings.critical_cg_share_pct|default(10) }}" min="0" max="100" step="1"><small>%；单件占柜总重达到此比例且CG未知时进入工程复核</small></label>
+</div></details>
+      <button class="smart-run" type="submit">优化木箱利用率 + 重新装柜</button>
+    </form>
+<details class="ui-fold rule-fold"><summary>查看规划规则与计算说明</summary><div class="fold-content">    <div class="smart-note"><b>V5.8.28沿用V5.7最终排序：</b>先避免高风险方案 → 再比较木箱数/目标柜数 → 再降低需复核项 → 再比较木箱总CBM、箱皮重量和利用率。默认把可优化的小/中型管件箱推向 <b>60%~80%</b>；大型三通、弯头、异径等异形件不会为了数字好看强行塞到80%。</div><div class="smart-note"><b>V3.6 大件骨架+小件填空：</b>同材质大弯头/大三通先落位，小弯头、小异径、小三通随后填补周边空隙；仍受碰撞、支撑、毛重和取放空间约束。</div><div class="smart-note"><b>V3.7 可清点性约束：</b>默认每箱最多30件、8种物料；同规格尽量集中，达到清点上限自动开新箱。</div><div class="smart-note"><b>V5.8.28沿用V5.7多候选3D启发式消箱：</b>自动木箱生成后，不直接接受初始分箱。系统逐一测试可消除的来源箱；先尝试整箱吸收到单一目标箱，再尝试多目标分配。每个竞争方案都必须重新执行完整3D排布和静态规划校核，只有来源箱真正被搬空才删除。最终排序：木箱数 → 目标柜数 → 工程复核风险 → 木箱总CBM → 箱皮总重 → 利用率。</div><div class="smart-note crate-weight-note"><b>V5.8.28沿用木箱结构规划模型：</b>默认按“箱板 + 框架 + 加强框 + 底部滑木 + 横档 + 辅材”分项计算箱皮，同时把箱板、框架侵入和滑木高度真实扣入净装货空间。上面的“装箱间隙”只代表货物与结构之间的操作/保护余量，不再代替结构厚度。箱体重量与顶载仍属于规划估算，数据确认及实际发运仍以包装厂结构确认和实际称重为准。</div>
+</div></details>
+    {% if crate_strategy %}
+    <div class="crate-strategy-result">
+      <div class="strategy-result-title">最近一次木箱尺寸策略</div>
+      <div class="strategy-result-grid">
+        <div><span>模式</span><b>{{ '固定尺寸' if crate_strategy.mode=='fixed' else '集装箱反推' }}</b></div>
+        <div><span>目标箱型</span><b>{{ crate_strategy.target_container }}</b></div>
+        <div><span>推荐/固定包络</span><b>{{ crate_strategy.recommended_l|int }} × {{ crate_strategy.recommended_w|int }} × {{ crate_strategy.recommended_h|int }} mm</b></div>
+        <div><span>木箱数量</span><b>{{ crate_strategy.crate_count }}</b></div>
+        {% if crate_strategy.container_count is defined %}<div><span>预计目标柜数</span><b>{{ crate_strategy.container_count }} 柜</b></div>{% endif %}
+        {% if crate_strategy.container_util is defined %}<div><span>预计总体积利用率</span><b>{{ crate_strategy.container_util }}%</b></div>{% endif %}
+        {% if crate_strategy.avg_crate_util is defined %}<div><span>平均木箱利用率</span><b>{{ crate_strategy.avg_crate_util }}%</b></div>{% endif %}
+        {% if crate_strategy.low_util_crates is defined %}<div><span>低于目标下限</span><b>{{ crate_strategy.low_util_crates }} 箱</b></div>{% endif %}
+        {% if crate_strategy.precision_eliminated is defined %}<div><span>全局精度消箱</span><b>减少 {{ crate_strategy.precision_eliminated }} 箱</b></div>{% endif %}
+        {% if crate_strategy.engineering_review_count is defined %}<div><span>工程复核项</span><b>{{ crate_strategy.engineering_review_count }}</b></div>{% endif %}
+        {% if crate_strategy.crate_cbm is defined and crate_strategy.crate_cbm is not none %}<div><span>木箱总CBM</span><b>{{ crate_strategy.crate_cbm }} m³</b></div>{% endif %}
+        {% if crate_strategy.crate_tare_total is defined and crate_strategy.crate_tare_total is not none %}<div><span>箱皮总重</span><b>{{ crate_strategy.crate_tare_total }} kg</b></div>{% endif %}
+        {% if crate_strategy.candidate_scanned is defined %}<div><span>候选包络 / 精度终选</span><b>{{ crate_strategy.candidate_scanned }} / {{ crate_strategy.precision_finalists }}</b></div>{% endif %}
+        {% if crate_strategy.target_util_min is defined %}<div><span>合理目标区间</span><b>{{ crate_strategy.target_util_min|int }}% ~ {{ crate_strategy.target_util_max|int }}%</b></div>{% endif %}
+        {% if crate_strategy.long_pipe_mode is defined %}<div><span>长管装箱策略</span><b>{{ {'conservative':'保守','standard':'标准','aggressive':'激进'}.get(crate_strategy.long_pipe_mode,crate_strategy.long_pipe_mode) }}</b></div>{% endif %}
+        {% if crate_strategy.max_pipes_per_crate is defined %}<div><span>长管每箱根数</span><b>{{ '自动' if crate_strategy.max_pipes_per_crate==0 else crate_strategy.max_pipes_per_crate }}</b></div>{% endif %}
+        {% if crate_strategy.max_items_per_crate is defined %}<div><span>每箱最大件数</span><b>{{ '不限' if crate_strategy.max_items_per_crate==0 else crate_strategy.max_items_per_crate }}</b></div>{% endif %}
+        {% if crate_strategy.max_skus_per_crate is defined %}<div><span>每箱最大种类</span><b>{{ '不限' if crate_strategy.max_skus_per_crate==0 else crate_strategy.max_skus_per_crate }}</b></div>{% endif %}
+      </div>
+      <div class="strategy-explain">{{ crate_strategy.note }}</div>
+      {% if crate_strategy.alternatives %}
+      <details class="strategy-alternatives"><summary>查看前5组候选木箱包络</summary>
+        <table><thead><tr><th>候选</th><th>木箱最大包络(mm)</th><th>木箱数</th><th>精度消箱</th><th>工程复核</th><th>总CBM</th><th>箱皮kg</th><th>预计柜数</th><th>柜利用率</th></tr></thead><tbody>
+        {% for a in crate_strategy.alternatives %}<tr><td>{{ loop.index }}</td><td>{{ a.max_l|int }}×{{ a.max_w|int }}×{{ a.max_h|int }}</td><td>{{ a.crate_count }}</td><td>{{ a.precision_eliminated if a.precision_eliminated is defined else 0 }}</td><td>{{ a.engineering_review_count if a.engineering_review_count is defined else 0 }}</td><td>{{ a.crate_cbm if a.crate_cbm is defined else '—' }}</td><td>{{ a.crate_tare_total if a.crate_tare_total is defined else '—' }}</td><td>{{ a.container_count }}</td><td>{{ a.container_util }}%</td></tr>{% endfor %}
+        </tbody></table></details>
+      {% endif %}
+    </div>
+    {% endif %}
+  </section>
+
+  <details class="panel bundle-panel ui-fold section-fold" id="pipeParameters"><summary>碳钢管束参数</summary><div class="fold-content">
+    <div class="section-head"><div><h2>②A 碳钢管道裸装扎捆</h2><p>碳钢管道按总米数、外径、壁厚生成规划管束，并在集装箱3D中按圆管扎捆显示。</p></div><div class="smart-badge">V3.2 裸装模式</div></div>
+    <form action="/pipe-bundles" method="post" class="smart-grid">
+      <label><span>规划单根发运长度</span><input name="ship_length_mm" type="number" value="6000" min="1000" step="500"><small>mm</small></label>
+      <label><span>单捆最大重量</span><input name="max_bundle_weight" type="number" value="3000" min="100" step="100"><small>kg</small></label>
+      <label><span>单捆最大宽</span><input name="max_bundle_width" type="number" value="1200" min="100" step="50"><small>mm</small></label>
+      <label><span>单捆最大高</span><input name="max_bundle_height" type="number" value="1200" min="100" step="50"><small>mm</small></label>
+      <button class="smart-run" type="submit">重新生成碳钢管束</button>
+    </form>
+    <div class="smart-note">源清单只有总米数时，这里是规划分根；正式发货前应以实际定尺/不定尺发货清单替换。</div>
+  <div class="smart-note"><b>V5.8.28沿用V5.7物理约束语义：</b>自动装箱、拆箱、改箱尺寸和重新分配均回到同一套3D约束重新排布；终审统一检查结构净空间、碰撞、边界、支撑/顶载、毛重与重心。任何几何或数量修改后不再沿用旧坐标“假通过”。</div>
+  </div></details>
+
+  {% if project_warnings %}
+  <section class="panel insight-panel">
+    <h2>③ 系统主动检查</h2>
+    <div class="insight-list">{% for w in project_warnings %}<div class="insight {{ w.level }}">{{ w.text }}</div>{% endfor %}</div>
+  </section>
+  {% endif %}
+
+  <details class="panel ui-fold section-fold" id="manualMaterials"><summary>手工新增材料</summary><div class="fold-content">
+    <h2>④ 手工新增材料 <span class="muted-title">（少量补充或修正时使用）</span></h2>
+    <form id="itemForm" class="grid-form">
+      <input name="name" placeholder="物料名称，如：电缆盘" required>
+      <input name="qty" type="number" min="1" value="1" placeholder="数量" required>
+      <input name="length_mm" type="number" step="1" placeholder="长 mm" required>
+      <input name="width_mm" type="number" step="1" placeholder="宽 mm" required>
+      <input name="height_mm" type="number" step="1" placeholder="高 mm" required>
+      <input name="weight_kg" type="number" step="0.1" placeholder="单件重量 kg" required>
+      <input name="cg_x_mm" type="number" step="0.1" placeholder="CG-X mm（可选）">
+      <input name="cg_y_mm" type="number" step="0.1" placeholder="CG-Y mm（可选）">
+      <input name="cg_z_mm" type="number" step="0.1" placeholder="CG-Z mm（可选）">
+      <select name="cg_source_type" title="CG来源"><option value="UNCONFIRMED">CG来源：未确认</option>{% for o in physical_source_options %}{% if o.value!='UNCONFIRMED' %}<option value="{{ o.value }}">CG来源：{{ o.label }}</option>{% endif %}{% endfor %}</select>
+      <select name="package_type"><option>木箱</option><option>裸装</option></select>
+      <button>添加材料</button>
+    </form>
+  </div></details>
+
+  <details class="panel ui-fold section-fold" id="manualCrates"><summary>手工建立木箱</summary><div class="fold-content">
+    <h2>⑤ 手工建立/修改木箱</h2>
+    <form id="crateForm" class="grid-form">
+      <input name="name" placeholder="木箱编号，如 BX-001" required>
+      <input name="length_mm" type="number" placeholder="木箱长 mm" required>
+      <input name="width_mm" type="number" placeholder="木箱宽 mm" required>
+      <input name="height_mm" type="number" placeholder="木箱高 mm" required>
+      <input name="tare_weight_kg" type="number" step="0.1" value="120" placeholder="箱体自重 kg">
+      <button>新建木箱</button>
+    </form>
+  </div></details>
+
+  <details class="panel size-policy-panel ui-fold section-fold" id="dimensionRules"><summary>尺寸可信度说明</summary><div class="fold-content">
+    <h2>尺寸数据可信度规则</h2>
+    <div class="weight-policy-grid">
+      <div><span class="size-grade grade-a">A级</span><b>凭证已登记·人工核对一致的尺寸</b><p>A1=单件实测；A2=批次；A3=类型/项目批准。必须记录凭证上的L/W/H并与系统值核对。</p></div>
+      <div><span class="size-grade grade-b">B级</span><b>有依据但未完成A级人工对照</b><p>B1=供应商/上传声明；B2=项目/类型数据；B3=标准换算。规划可用，数据对照版不接受。</p></div>
+      <div><span class="size-grade grade-c">C级</span><b>项目几何估算</b><p>5083或缺少逐规格标准/厂家数据时使用；正式包装前建议厂家图纸复核。</p></div>
+    </div>
+  </div></details>
+
+  <details class="panel weight-policy-panel ui-fold section-fold" id="weightRules"><summary>重量可信度说明</summary><div class="fold-content">
+    <h2>重量数据可信度规则</h2>
+    <div class="weight-policy-grid">
+      <div><span class="weight-grade grade-a">A级</span><b>凭证已登记·人工核对一致的重量</b><p>A1=单件实称；A2=批次记录；A3=类型/项目批准。必须记录凭证上的kg值并与系统值核对。</p></div>
+      <div><span class="weight-grade grade-b">B级</span><b>有依据但未完成A级人工对照</b><p>B1=供应商/上传声明；B2=项目/类型数据；B3=标准理论换算。</p></div>
+      <div><span class="weight-grade grade-c">C级</span><b>规划估算重量</b><p>简化几何或分摊得到，只用于方案阶段；数据确认前应替换。</p></div>
+    </div>
+  </div></details>
+
+  {% if crates and crate_advice_summary %}
+  <section class="panel explain-panel">
+    <div class="section-head">
+      <div>
+        <h2>⑥ 装箱合理性解释器</h2>
+        <p>不是只给“利用率”，而是告诉你为什么这样装、是否值得合箱、以及对目标集装箱柜数的影响。</p>
+      </div>
+      <div class="explain-score"><span>当前木箱方案平均合理性</span><strong>{{ crate_advice_summary.avg_score }}/100</strong></div>
+    </div>
+    <div class="explain-summary-grid">
+      <div><span>建议保留</span><b>{{ crate_advice_summary.keep }} 箱</b></div>
+      <div><span>建议合箱/重排</span><b>{{ crate_advice_summary.merge }} 箱</b></div>
+      <div><span>需复核/先修正</span><b>{{ crate_advice_summary.review }} 箱</b></div>
+      <div><span>目标集装箱</span><b>{{ crate_advice_summary.target_container }}{% if crate_advice_summary.target_count %} · 当前约{{ crate_advice_summary.target_count }}柜{% endif %}</b></div>
+      <div><span>合理利用率目标</span><b>{{ crate_advice_summary.target_min|round(0)|int }}%~{{ crate_advice_summary.target_max|round(0)|int }}%</b></div>
+    </div>
+  </section>
+  {% endif %}
+
+  <details class="panel compact-rule-panel ui-fold section-fold" id="mixingRules"><summary>材质与混装规则</summary><div class="fold-content"><h2>V5.8.28 紧凑装箱兼容规则</h2><div class="compact-rule-grid"><div><b>5083（铝合金）</b><span>只与5083混装；件间按10 mm防摩擦膜间隙。</span></div><div><b>其它材质</b><span>允许互相混装；额外保护间隙=0，尽量靠紧。</span></div><div><b>智能填空</b><span>从其它木箱逐件搬入，不再要求另一个整箱全部合并。</span></div></div></div></details>
+
+<section id="crateDetailSection" class="panel crate-detail-panel">
+    <div class="section-head">
+      <div>
+        <h2>⑥ 木箱总览</h2>
+        <p>每个箱号只出现一次。点击任一木箱卡片，直接弹出该箱的“箱内清单 + 3D布置图 + 静态规划校核”。</p><details class="ui-fold rule-fold"><summary>木箱混装规则与编号说明</summary><div class="fold-content"><p class="focused-merge-note"><b>V5.8.28沿用消箱优先智能填空：</b>不再要求整箱合并。系统从其它木箱逐件寻找合适材料填入当前空隙；5083只取5083并按10mm防摩擦膜间隙，其他材质可互混且额外保护间隙为0。</p><p class="crate-number-note"><b>箱号规则：</b>BX-PF = 软件自动生成管件木箱；BX-SRC = 原发货清单已有木箱（保留原箱号追溯）。</p></div></details>
+      </div>
+    </div>
+    {% if crates %}
+      <div class="crate-filter-bar"><label>查找木箱<input type="search" id="crateSearch" placeholder="箱号或货物名称"></label><label>筛选<select id="crateFilter"><option value="all">全部木箱</option><option value="review">只看待复核</option><option value="prepacked">已包装运输单元</option></select></label><span id="crateFilterCount" role="status"></span><span id="formDirtyCount" role="status"></span></div><div id="crateFilterEmpty" class="empty" hidden>没有匹配的木箱</div><div class="crate-overview-grid">
+        {% for c in crates %}
+          <div class="crate-overview-card" data-crate-name="{{ c.name }}" data-search="{{ c.name }} {{ stats[c.id].contents|join(' ') }}" data-prepacked="{{ 1 if c.package_origin=='PREPACKED' else 0 }}" data-review="{{ 1 if c.package_origin=='PREPACKED' or not c.size_confirmed or not c.gross_weight_confirmed or (crate_advice.get(c.id) and ('复核' in crate_advice[c.id].action or crate_advice[c.id].action=='先修正')) else 0 }}">
+            <div class="crate-overview-title">{{ c.name }}</div>
+            <div class="crate-overview-size">{{ c.length_mm|int }} × {{ c.width_mm|int }} × {{ c.height_mm|int }} mm</div><div class="compact-crate-status"><span class="{{ 'confirmed' if c.size_confirmed and c.size_evidence_id else 'pending' }}">外形{{ '已对照' if c.size_confirmed and c.size_evidence_id else '待确认' }}</span><span class="{{ 'confirmed' if c.gross_weight_confirmed else 'pending' }}">毛重{{ '已对照' if c.gross_weight_confirmed else '待确认' }}</span><span class="pending">顶载{{ '已录入确认值' if c.top_load_confirmed else '未确认' }}</span><span class="{{ 'confirmed' if c.contact_area_source_type and c.contact_area_source_type!='UNCONFIRMED' else 'pending' }}">接触面积{{ '已填来源' if c.contact_area_source_type and c.contact_area_source_type!='UNCONFIRMED' else '待确认' }}</span></div>
+            <div class="crate-overview-meta">{{ stats[c.id].item_count }} 件 · 毛重 {{ stats[c.id].gross_weight|round(1) }} kg</div>
+            <div class="crate-countability">清点：{{ stats[c.id].item_count }}件 / {{ stats[c.id].sku_count }}种{% if crate_strategy.max_items_per_crate is defined and crate_strategy.max_items_per_crate and stats[c.id].item_count > crate_strategy.max_items_per_crate %} · <b>超件数</b>{% endif %}{% if crate_strategy.max_skus_per_crate is defined and crate_strategy.max_skus_per_crate and stats[c.id].sku_count > crate_strategy.max_skus_per_crate %} · <b>超种类</b>{% endif %}</div>
+{% set u = 100 if c.package_origin=='PREPACKED' else stats[c.id].utilization %}
+{% if c.package_origin=='PREPACKED' %}<div class="prepacked-note"><b>已包装运输单元</b><br>使用箱单外尺寸和毛重装柜；设备净重、箱皮与箱内利用率未知，暂不进行拆箱/合箱。</div>{% else %}{% if stats[c.id].net_utilization > 100 %}<div class="compact-critical">净空间占用超过100%，请复核尺寸或箱内排布。</div>{% endif %}
+            <div class="crate-util-row"><span>外箱体积占位率 <b>{{ '不适用（已包装）' if c.package_origin=='PREPACKED' else (stats[c.id].utilization|string + '%') }}</b></span><span>净空间利用率 <b>{{ stats[c.id].net_utilization }}%</b></span>{% if stats[c.id].planning_util is not none %}<span>紧凑规划占位率 <b>{{ stats[c.id].planning_util }}%</b></span>{% endif %}</div>
+            <div class="crate-countability">外形CBM {{ stats[c.id].outer_cbm }} m³ · 结构净尺寸 {{ stats[c.id].clear_dims }} mm · {{ stats[c.id].structure_class }}结构</div>
+            
+            {% if u < 45 %}<div class="util-badge util-high-potential">可优化潜力：高 · 建议合箱/重排</div>
+            {% elif u < 60 %}<div class="util-badge util-mid-potential">可优化潜力：中 · 建议重排</div>
+            {% elif u <= 80 %}<div class="util-badge util-good">合理区间</div>
+            {% else %}<div class="util-badge util-tight">偏紧，复核固定/支撑</div>{% endif %}
+{% endif %}
+            <div class="crate-overview-grade">重量可信度 {{ stats[c.id].weight_grade }}级</div>
+<details class="ui-fold crate-fold" onclick="event.stopPropagation()"><summary>尺寸与重量凭证 <small>外形核对、实称毛重、自重分项</small></summary><div class="fold-content"><div class="crate-countability">外形确认：{% if c.size_confirmed %}<b>外形凭证已登记/人工对照一致</b> · {{ c.size_source }}{% else %}<b>待确认</b> · {{ c.size_source }}{% endif %}</div>{% if not c.size_confirmed or not c.size_evidence_id %}<form action="/crates/{{ c.id }}/confirm-size" method="post" enctype="multipart/form-data" onclick="event.stopPropagation()" class="evidence-inline"><input name="evidence" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.xlsx,.xls,.csv,.docx,.txt" required><input name="evidence_length_mm" type="number" step="0.1" placeholder="凭证L mm" required><input name="evidence_width_mm" type="number" step="0.1" placeholder="凭证W mm" required><input name="evidence_height_mm" type="number" step="0.1" placeholder="凭证H mm" required><input name="evidence_note" placeholder="测量/批准记录"><button type="submit" class="ghost-action">核对凭证并确认外形</button></form>{% else %}<a href="/evidence/{{ c.size_evidence_id }}">查看外形凭证</a>{% endif %}
+            <div class="crate-weight-box">
+              <div><span>设备净重</span><b>{{ '未知（已包装单元）' if c.package_origin=='PREPACKED' else (stats[c.id].cargo_weight|round(1)|string + ' kg') }}</b></div>
+              <div><span>箱体自重</span><b>{{ '未知' if c.package_origin=='PREPACKED' else (stats[c.id].tare_weight|round(1)|string + ' kg') }}</b><small>{{ stats[c.id].tare_breakdown.class_label }}结构估算{% if '已确认' in stats[c.id].gross_weight_source %} / 由实称毛重反算{% endif %}</small></div>
+              <div><span>箱体毛重</span><b>{{ stats[c.id].gross_weight|round(1) }} kg</b><small>{{ stats[c.id].gross_weight_source }}</small></div>
+            </div>
+            {% if stats[c.id].tare_breakdown.model=='structural' %}<details class="tare-breakdown"><summary>查看箱体自重分项</summary><div class="tare-breakdown-grid"><span>箱板 {{ stats[c.id].tare_breakdown.panel_kg }} kg</span><span>边框 {{ stats[c.id].tare_breakdown.edge_frame_kg }} kg</span><span>加强框 {{ stats[c.id].tare_breakdown.rib_kg }} kg</span><span>滑木 {{ stats[c.id].tare_breakdown.runner_kg }} kg</span><span>横档 {{ stats[c.id].tare_breakdown.cross_bearer_kg }} kg</span><span>辅材 {{ stats[c.id].tare_breakdown.hardware_kg }} kg</span></div><small>{{ stats[c.id].tare_breakdown.note }}</small></details>{% endif %}
+            <form action="/crates/{{ c.id }}/actual-gross" method="post" enctype="multipart/form-data" class="actual-gross-form" onclick="event.stopPropagation()"><input name="actual_gross_weight_kg" type="number" step="0.1" min="0" value="{{ stats[c.id].actual_gross_weight if stats[c.id].actual_gross_weight else '' }}" placeholder="实称毛重 kg"><input name="evidence" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.xlsx,.xls,.csv,.docx,.txt"><input name="evidence_weight_kg" type="number" step="0.1" min="0" placeholder="秤票核对值 kg"><input name="evidence_note" placeholder="秤票/称重记录号"><button type="submit">核对秤票并保存</button><small>{% if c.gross_weight_confirmed %}<b>当前毛重已登记秤票/人工对照一致</b>{% elif c.actual_gross_weight_kg %}<b>当前毛重来自导入/历史记录，待确认</b>{% else %}未录入实称毛重{% endif %}{% if c.package_origin!='PREPACKED' %}；填0提交=恢复工程估算{% endif %}</small></form>
+</div></details>
+<details class="ui-fold crate-fold" onclick="event.stopPropagation()"><summary>顶载、接触面积与系固 <small>工程输入及附件核对</small></summary><div class="fold-content">            <form action="/crates/{{ c.id }}/physical" method="post" enctype="multipart/form-data" class="actual-gross-form physical-constraint-form" onclick="event.stopPropagation()">
+<fieldset class="compact-fieldset"><legend>顶载</legend><input name="max_top_load_kg" type="number" step="1" min="0" value="{{ c.max_top_load_kg if c.max_top_load_kg is not none else '' }}" placeholder="顶载 kg">
+<select name="top_load_source_type"><option value="UNCONFIRMED">顶载来源：未确认</option>{% for o in physical_source_options %}{% if o.value!='UNCONFIRMED' %}<option value="{{ o.value }}" {% if c.top_load_source_type==o.value %}selected{% endif %}>顶载来源：{{ o.label }}</option>{% endif %}{% endfor %}</select><input name="top_load_source_note" value="{{ c.top_load_source_note or '' }}" placeholder="顶载资料/计算说明">
+<label><input type="checkbox" name="top_load_confirmed" value="1" {% if c.top_load_confirmed %}checked{% endif %}>顶载值已确认</label><input name="top_load_evidence" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.xlsx,.xls,.csv,.docx,.txt"><input name="evidence_top_load_kg" type="number" step="1" min="0" placeholder="凭证顶载核对值 kg"><input name="top_load_evidence_note" placeholder="顶载凭证/计算书编号">{% if c.top_load_evidence_id %}<a href="/evidence/{{ c.top_load_evidence_id }}">查看顶载凭证</a>{% endif %}
+</fieldset><fieldset class="compact-fieldset"><legend>地板接触面积</legend><label><span>地板有效接触面积</span><select name="contact_area_mode"><option value="UNSPECIFIED" {% if not c.contact_area_mode or c.contact_area_mode=='UNSPECIFIED' %}selected{% endif %}>未确认（暂按整底面估算）</option><option value="FULL_BASE" {% if c.contact_area_mode=='FULL_BASE' %}selected{% endif %}>确认整底面接触</option><option value="SKIDS" {% if c.contact_area_mode=='SKIDS' %}selected{% endif %}>按滑木接触</option><option value="CUSTOM" {% if c.contact_area_mode=='CUSTOM' %}selected{% endif %}>自定义有效接触面积</option></select></label>
+<select name="contact_area_source_type"><option value="UNCONFIRMED">接触面积来源：未确认</option>{% for o in physical_source_options %}{% if o.value!='UNCONFIRMED' %}<option value="{{ o.value }}" {% if c.contact_area_source_type==o.value %}selected{% endif %}>接触面积来源：{{ o.label }}</option>{% endif %}{% endfor %}</select><input name="contact_area_source_note" value="{{ c.contact_area_source_note or '' }}" placeholder="滑木图/实测/工程计算说明">
+<input name="skid_count" type="number" min="0" step="1" value="{{ c.skid_count or 0 }}" placeholder="滑木数量">
+<input name="skid_width_mm" type="number" min="0" step="1" value="{{ c.skid_width_mm if c.skid_width_mm is not none else '' }}" placeholder="单根滑木接触宽 mm">
+<input name="skid_contact_length_mm" type="number" min="0" step="1" value="{{ c.skid_contact_length_mm if c.skid_contact_length_mm is not none else '' }}" placeholder="单根有效接触长 mm">
+<input name="custom_contact_area_m2" type="number" min="0" step="0.001" value="{{ c.custom_contact_area_m2 if c.custom_contact_area_m2 is not none else '' }}" placeholder="自定义有效接触面积 m²"><input name="contact_area_evidence" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.xlsx,.xls,.csv,.docx,.txt"><input name="evidence_contact_area_m2" type="number" min="0" step="0.0001" placeholder="凭证有效接触面积 m²"><input name="contact_area_evidence_note" placeholder="滑木图/测量表/计算书编号">{% if c.contact_area_evidence_id %}<a href="/evidence/{{ c.contact_area_evidence_id }}">查看接触面积凭证</a>{% endif %}
+</fieldset><fieldset class="compact-fieldset"><legend>系固与装卸</legend><label><input type="checkbox" name="lashing_required" value="1" {% if c.lashing_required %}checked{% endif %}>本箱要求系固</label><input name="lashing_points" type="number" min="0" step="1" value="{{ c.lashing_points or 0 }}" placeholder="系固点数量"><label><input type="checkbox" name="lashing_confirmed" value="1" {% if c.lashing_confirmed %}checked{% endif %}>系固点/方案已确认</label><input name="lashing_evidence" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.xlsx,.xls,.csv,.docx,.txt"><input name="evidence_lashing_points" type="number" min="0" step="1" placeholder="凭证系固点数量"><input name="lashing_evidence_note" placeholder="系固图/方案编号">{% if c.lashing_evidence_id %}<a href="/evidence/{{ c.lashing_evidence_id }}">查看系固凭证</a>{% endif %}<input name="handling_note" value="{{ c.handling_note or '' }}" placeholder="叉车/吊装/装卸说明"></fieldset><button type="submit">保存静态物理约束信息</button><small>V5.8.28：来源下拉+数值用于DRAFT静态规划；顶载、有效接触面积、系固若要在正式对照资料中视为“已闭环”，必须上传对应附件并由责任人手工录入核对值。软件仍不OCR，不计算结构强度/绑扎力。</small></form></div></details>
+            {% if stats[c.id].actual_gross_weight_warning %}<div class="crate-warning">⚠️ {{ stats[c.id].actual_gross_weight_warning }}</div>{% endif %}
+            {% set adv = crate_advice.get(c.id) %}
+            {% if adv %}
+<details class="ui-fold crate-fold" onclick="event.stopPropagation()"><summary>优化建议 <span class="compact-advice"><span class="action-pill action-{{ 'ok' if adv.action=='保留' else ('warn' if '复核' in adv.action or adv.action=='先修正' else 'opt') }}">{{ adv.action }}</span><b>合理性 {{ adv.score }}/100</b></span></summary><div class="fold-content">            <div class="crate-explain-box">
+              
+              <p>{{ adv.reason }}</p>
+              {% if adv.shrink %}<div class="shrink-preview"><div><span>当前尺寸</span><b>{{ adv.shrink.current_dims }} mm</b></div><div><span>建议尺寸</span><b>{{ adv.shrink.recommended_dims }} mm</b></div><div><span>利用率</span><b>{{ adv.shrink.current_util }}% → {{ adv.shrink.recommended_util }}%</b></div><div><span>箱体体积节省</span><b>{{ adv.shrink.volume_saving_pct }}%</b></div></div>{% endif %}
+              {% if adv.merge %}
+              <div class="merge-preview">
+                <span>推荐搭档：<b>{{ adv.merge.partner }}</b></span>
+                <span>合并后利用率：<b>{{ adv.merge.merged_util }}%</b></span>
+                <span>预计木箱：<b>{{ adv.merge.merged_dims }} mm</b></span>
+                {% if adv.merge.container_before and adv.merge.container_after %}
+                <span>目标柜数：<b>{{ adv.merge.container_before }} → {{ adv.merge.container_after }}</b></span>
+                {% endif %}
+              </div>
+              {% endif %}
+            </div>
+</div></details>
+            {% endif %}
+            <div class="crate-card-actions">
+              <button type="button" class="crate-view-btn" data-crate-name="{{ c.name }}">查看清单和3D</button>
+              <button type="button" class="crate-mark-btn js-export-crate-mark" data-crate-id="{{ c.id }}" onclick="event.stopPropagation()">生成唛头Word</button>
+              {% if adv and adv.shrink %}<form action="/apply-crate-shrink" method="post" class="crate-shrink-form" data-crate-name="{{ c.name }}" data-recommended-dims="{{ adv.shrink.recommended_dims }}"><input type="hidden" name="crate_id" value="{{ c.id }}"><button type="submit" class="crate-shrink-btn">应用建议缩箱</button></form>{% endif %}
+              {% if u < 60 %}<form action="/smart-fill-crate" method="post" class="crate-repack-form js-fast-fill-form"><input type="hidden" name="crate_id" value="{{ c.id }}"><button type="submit" class="crate-repack-btn" onclick="event.stopPropagation()">消箱优先智能填空</button></form>{% endif %}
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}<div class="empty">完成智能分箱后，这里会按箱号显示每只木箱。</div>{% endif %}
+  </section>
+
+  <div id="crateModal" class="crate-modal" aria-hidden="true">
+    <div class="crate-modal-backdrop" data-close-crate-modal></div>
+    <div class="crate-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="crateModalTitle">
+      <div class="crate-modal-header">
+        <div>
+          <h2 id="crateModalTitle">木箱详情</h2>
+          <div id="crateModalSub" class="crate-modal-sub"></div>
+        </div>
+        <button type="button" class="crate-modal-close" data-close-crate-modal>×</button>
+      </div>
+      <div class="crate-modal-tabs">
+        <button type="button" class="crate-tab active" data-tab="list">箱内清单</button>
+        <button type="button" class="crate-tab" data-tab="3d">3D布置图 / 静态规划校核</button>
+      </div>
+      <div class="crate-modal-body">
+        <div id="crateTabList" class="crate-tab-pane active">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>材料</th><th>材质</th><th>数量</th><th>装箱外包络(mm)</th><th>尺寸来源</th><th>单件重量</th><th>重量来源</th></tr></thead>
+              <tbody id="crateModalListBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="crateTab3d" class="crate-tab-pane">
+          <div class="visual3d-toolbar">
+            <div class="view-switch" role="group" aria-label="3D视角">
+              <button type="button" class="view-btn active" data-crate-view="perspective">透视</button>
+              <button type="button" class="view-btn" data-crate-view="top">俯视</button>
+              <button type="button" class="view-btn" data-crate-view="front">正视</button>
+              <button type="button" class="view-btn" data-crate-view="side">侧视</button>
+              <button type="button" class="view-btn view-reset-btn" id="crateViewReset">复位</button>
+            </div>
+            <div class="orbit-help" aria-label="3D操作说明">拖动旋转 · 滚轮缩放 · Shift/右键拖动平移 · 双击复位</div>
+            <div class="view-options">
+              <label><input id="crateShowLabels" type="checkbox" checked> 编号</label>
+              <label><input id="crateShowShell" type="checkbox" checked> 半透明箱体</label>
+              <button type="button" class="ghost-action" id="crateExportSvg">导出SVG</button>
+              <button type="button" class="ghost-action" id="crateExportPng">导出PNG</button>
+            </div>
+          </div>
+          <div id="crateModalSummary" class="viewer-summary"></div>
+          <div class="visual3d-stage-wrap">
+            <div id="crateModalCanvas" class="viewer-canvas visual3d-stage">正在生成3D图…</div>
+            <aside id="crateSelectedInfo" class="crate-selected-info">
+              <div class="selected-empty">点击3D货物查看详情</div>
+            </aside>
+          </div>
+          <div id="crateModalAudit" class="crate-audit-detail"></div>
+          <div id="crateModalLegend" class="legend-wrap"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <details class="panel material-details-panel">
+    <summary>展开查看全部材料明细（高级/调整用）</summary>
+    <div class="table-wrap material-details-wrap">
+      <table id="itemSourceTable">
+        <thead><tr><th>材料</th><th>材质</th><th>数量</th><th>装箱外包络(mm)</th><th>尺寸来源</th><th>单件重量</th><th>重量来源</th><th>单件CG</th><th>包装</th><th>箱号</th><th>调整木箱</th><th></th></tr></thead>
+        <tbody>
+        {% for i in items %}
+        <tr class="item-row" data-item-id="{{ i.id }}" data-crate-name="{{ i.crate_name or '' }}" data-item-name="{{ i.name }}" data-material="{{ i.material_label }}" data-qty="{{ i.qty }}" data-size="{{ i.length_mm|int }}×{{ i.width_mm|int }}×{{ i.height_mm|int }}" data-size-grade="{{ i.size_grade }}级" data-size-source="{{ i.size_source }}" data-size-note="{{ i.size_note }}" data-unit-weight="{{ '≈' if i.weight_grade != 'A' else '' }}{{ i.weight_kg|round(1) }} kg{{ '（整包毛重）' if i.is_package_placeholder else '' }}" data-weight-grade="{{ i.weight_grade }}级" data-weight-source="{{ i.weight_source }}" data-weight-note="{{ i.weight_note or '' }}" data-package-type="{{ i.package_type }}">
+          <td>{{ i.name }}</td><td><span class="material-badge">{{ i.material_label }}</span></td><td>{{ i.qty }}</td>
+          <td>{{ i.length_mm|int }}×{{ i.width_mm|int }}×{{ i.height_mm|int }}{% if i.size_grade != 'A' or not i.size_evidence_id or not i.size_evidence_valid %}<form action="/items/{{ i.id }}/confirm-size" method="post" enctype="multipart/form-data" class="evidence-inline"><input name="evidence" type="file" required><input name="evidence_length_mm" type="number" step="0.1" placeholder="凭证L" required><input name="evidence_width_mm" type="number" step="0.1" placeholder="凭证W" required><input name="evidence_height_mm" type="number" step="0.1" placeholder="凭证H" required><select name="evidence_scope"><option value="item">单件</option><option value="batch">批次</option><option value="type">类型</option><option value="project">项目</option></select><input name="evidence_scope_key" placeholder="批次/类型标识（单件可空）"><input name="evidence_note" placeholder="图纸/测量记录"><button type="submit" class="ghost-action">核对凭证并升级A级</button></form>{% else %}<a href="/evidence/{{ i.size_evidence_id }}">尺寸凭证</a>{% endif %}</td><td><span class="size-grade grade-{{ i.size_grade|lower }}">{{ i.size_subgrade or i.size_grade }}级</span><div class="size-source">{{ i.size_source }}</div><div class="size-note" title="{{ i.size_note }}">{{ i.size_note }}</div></td>
+          <td><b>{{ '≈' if i.weight_grade != 'A' else '' }}{{ i.weight_kg|round(1) }} kg{{ '（整包毛重）' if i.is_package_placeholder else '' }}</b>{% if i.weight_grade != 'A' or not i.weight_evidence_id or not i.weight_evidence_valid %}<form action="/items/{{ i.id }}/confirm-weight" method="post" enctype="multipart/form-data" class="evidence-inline"><input name="evidence" type="file" required><input name="evidence_weight_kg" type="number" step="0.1" placeholder="凭证kg" required><select name="evidence_scope"><option value="item">单件</option><option value="batch">批次</option><option value="type">类型</option><option value="project">项目</option></select><input name="evidence_scope_key" placeholder="批次/类型标识（单件可空）"><input name="evidence_note" placeholder="秤票/批准文件"><button type="submit" class="ghost-action">核对凭证并升级A级</button></form>{% else %}<a href="/evidence/{{ i.weight_evidence_id }}">重量凭证</a>{% endif %}</td>
+          <td><span class="weight-grade grade-{{ i.weight_grade|lower }}">{{ i.weight_subgrade or i.weight_grade }}级</span><div class="weight-source">{{ i.weight_source }}</div>{% if i.weight_note %}<div class="weight-note" title="{{ i.weight_note }}">{{ i.weight_note }}</div>{% endif %}</td>
+          <td>{% if i.cg_confirmed and i.cg_source_type and i.cg_source_type!='UNCONFIRMED' %}<b>{{ i.cg_x_mm|round(1) }} / {{ i.cg_y_mm|round(1) }} / {{ i.cg_z_mm|round(1) }} mm</b><small>{{ i.cg_source }}</small>{% else %}<span>几何中心假设 / CG来源未确认</span>{% endif %}<form action="/items/{{ i.id }}/cg" method="post" enctype="multipart/form-data" class="evidence-inline"><input name="cg_x_mm" type="number" step="0.1" placeholder="CG-X"><input name="cg_y_mm" type="number" step="0.1" placeholder="CG-Y"><input name="cg_z_mm" type="number" step="0.1" placeholder="CG-Z"><select name="cg_source_type"><option value="UNCONFIRMED">来源：未确认</option>{% for o in physical_source_options %}{% if o.value!='UNCONFIRMED' %}<option value="{{ o.value }}" {% if i.cg_source_type==o.value %}selected{% endif %}>来源：{{ o.label }}</option>{% endif %}{% endfor %}</select><input name="cg_source" placeholder="来源说明/图号/测量记录"><input name="evidence" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.xlsx,.xls,.csv,.docx,.txt"><input name="evidence_cg_x_mm" type="number" step="0.1" placeholder="凭证CG-X"><input name="evidence_cg_y_mm" type="number" step="0.1" placeholder="凭证CG-Y"><input name="evidence_cg_z_mm" type="number" step="0.1" placeholder="凭证CG-Z"><input name="evidence_note" placeholder="CG图/实测表/计算书编号">{% if i.cg_evidence_id %}<a href="/evidence/{{ i.cg_evidence_id }}">CG凭证</a>{% endif %}<button type="submit" class="ghost-action">保存CG/凭证</button></form></td>
+          <td><span class="tag {{ 'bare' if i.package_type!='木箱' else '' }}">{{ i.package_type }}</span></td>
+          <td><b class="boxno">{{ i.crate_name if i.crate_name else ('待分箱' if i.package_type=='木箱' else '—') }}</b></td>
+          <td>{% if i.is_package_placeholder %}已包装单元{% elif i.package_type != '木箱' %}—{% else %}<select onchange="assignItem({{i.id}}, this.value)"><option value="0">未分配</option>{% for c in crates %}<option value="{{c.id}}" {% if i.crate_id==c.id %}selected{% endif %}>{{c.name}}</option>{% endfor %}</select>{% endif %}</td>
+          <td>{% if i.is_package_placeholder %}<span>整包删除见木箱卡片</span>{% else %}<button class="danger" onclick="deleteItem({{i.id}})">删除</button>{% endif %}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+
+  <details class="panel ui-fold section-fold" id="cratePlanTable"><summary>木箱规划明细</summary><div class="fold-content">
+    <h2>⑦ 木箱规划结果</h2>
+    <div class="cards">
+    {% for c in crates %}
+      <div class="crate-card">
+        <div class="crate-title">
+          <button type="button" class="crate-card-link" data-crate-name="{{ c.name }}">{{ c.name }}</button>
+          <span>{{ stats[c.id].item_count }} 件</span>
+        </div>
+        <div class="crate-visual">
+          <div class="box3d">{{ (c.length_mm/1000)|round(2) }}m × {{ (c.width_mm/1000)|round(2) }}m × {{ (c.height_mm/1000)|round(2) }}m</div>
+        </div>
+        <div class="mini-grid">
+          <div><span>毛重</span><b>{{ stats[c.id].gross_weight|round(1) }} kg</b><small>{{ stats[c.id].gross_weight_source }}</small></div>
+          <div><span>箱体自重</span><b>{{ '未知' if c.package_origin=='PREPACKED' else (stats[c.id].tare_weight|round(1)|string + ' kg') }}</b><small>{{ stats[c.id].tare_breakdown.class_label }}结构</small></div>
+          <div><span>重量可信度</span><b>{{ stats[c.id].weight_grade }}级</b><small>C级重量占 {{ stats[c.id].estimated_weight_ratio }}%</small></div>
+          <div><span>容积利用率</span><b>{{ '不适用（已包装）' if c.package_origin=='PREPACKED' else (stats[c.id].utilization|string + '%') }}</b></div>
+        </div>
+        <div class="crate-contents"><b>箱内材料：</b> {{ stats[c.id].contents|join('；') }}{% if stats[c.id].more_contents %}；另有 {{ stats[c.id].more_contents }} 项{% endif %}</div>
+        {% if c.package_origin!='PREPACKED' %}<form class="resize-form" onsubmit="resizeCrate(event, {{c.id}})">
+          <input name="length_mm" type="number" value="{{c.length_mm|int}}">
+          <input name="width_mm" type="number" value="{{c.width_mm|int}}">
+          <input name="height_mm" type="number" value="{{c.height_mm|int}}">
+          <button>修改尺寸</button>
+        </form>
+        {% endif %}<div class="actions">
+          {% if c.package_origin!='PREPACKED' %}<button onclick="splitCrate({{c.id}},2)">拆成2箱</button>
+          <button onclick="splitCrate({{c.id}},3)">拆成3箱</button>
+          {% endif %}<button class="danger" onclick="deleteCrate({{c.id}})">删除</button>
+        </div>
+      </div>
+    {% endfor %}
+    </div>
+  </div></details>
+
+  <details id="crateAuditSection" class="panel viewer-panel ui-fold section-fold"><summary>逐箱三维校核详情</summary><div class="fold-content">
+    <div class="section-head">
+      <div><h2>⑧ 木箱静态规划校核</h2><p>逐箱验证：外形尺寸、净重/毛重、包络利用率、最大单件、3D碰撞、边界、重心，以及“为什么不能再装下一件”。</p></div>
+      <div class="viewer-toolbar"><select id="crate3dSelect"></select></div>
+    </div>
+    {% if crates %}
+      <div id="crate3dSummary" class="viewer-summary"></div>
+      <div id="crate3dCanvas" class="viewer-canvas">选择木箱后显示内部3D排布…</div>
+      <div id="crateAuditDetail" class="crate-audit-detail"></div>
+      <div id="crate3dLegend" class="legend-wrap"></div>
+      <p class="note">校核采用管件保守外包络和规划重心。重心偏移阈值属于工程规划阈值，不替代包装厂对木方、绑扎、吊点和实际受力的最终确认。</p>
+    {% else %}<div class="empty">完成一键智能规划后，这里会显示每只木箱的内部3D排布。</div>{% endif %}
+  </div></details>
+
+  <section class="panel">
+    <h2>⑨ 集装箱方案比较</h2>
+    {% if rec.options %}
+    <div class="recommend">
+      {% for o in rec.options %}
+      <div class="option {% if loop.first %}best{% endif %}">
+        <div><strong>{{ o.label }}</strong>{% if loop.first %}<span class="bestmark">系统优先</span>{% endif %}</div>
+        <div class="big">{{ o.count }} 柜</div>
+        <div>体积利用率：{{ o.volume_utilization }}%</div>
+        <div>重量利用率：{{ o.weight_utilization }}%</div>
+        <div>特种箱：{{ o.special_count }} 个</div>
+        <div>高风险柜：{{ o.engineering_high_risk_count if o.engineering_high_risk_count is defined else 0 }} 个</div><div>需复核柜：{{ o.engineering_review_count if o.engineering_review_count is defined else 0 }} 个</div>
+        <div class="option-status-grid">
+          <div class="option-status"><span>静态规划校核</span><b class="{% if (o.engineering_high_risk_count if o.engineering_high_risk_count is defined else 0) > 0 %}bad{% elif (o.engineering_review_count if o.engineering_review_count is defined else 0) > 0 %}warn{% else %}ok{% endif %}">{% if (o.engineering_high_risk_count if o.engineering_high_risk_count is defined else 0) > 0 %}高风险{% elif (o.engineering_review_count if o.engineering_review_count is defined else 0) > 0 %}需复核{% else %}通过（当前模型）{% endif %}</b></div>
+          <div class="option-status"><span>工程输入凭证一致性</span><b class="{{ 'ok' if not physical_evidence_reviews else 'warn' }}">{% if physical_evidence_reviews %}未闭环 · NOT FOR RELEASE{% else %}当前已声明确认项已闭环{% endif %}</b></div>
+        </div>
+        {% if cost_settings.enabled %}<div class="cost-total">估算总成本：<b>{{ '%.0f'|format(o.total_cost) }} {{ o.currency }}</b></div><div class="cost-breakdown">运费 {{ '%.0f'|format(o.freight_cost) }} + 木箱 {{ '%.0f'|format(o.crate_cost) }} + OOG {{ '%.0f'|format(o.oog_cost) }}</div>{% endif %}
+        <div>最空单柜：{{ o.lowest_bin_utilization if o.lowest_bin_utilization is defined else '—' }}%</div>
+        <div><span class="smart-badge">{{ o.compression_status if o.compression_status is defined else '方案比较' }}</span></div>
+        <div class="reason">{{ o.reason }}</div>
+        {% if o.search_rejection_summary %}<div class="reason"><b>搜索候选淘汰：</b>{% for r in o.search_rejection_summary[:4] %}{{ r.label }} {{ r.count }}次{% if not loop.last %}；{% endif %}{% endfor %}<small>（统计的是候选位置/方向尝试，不是被丢弃的货物数量）</small></div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+      <div class="empty">先导入材料清单，并建立木箱/指定裸装件，系统会自动给出集装箱建议。</div>
+    {% endif %}
+    {% if rec.options and rec.options[0].flexible_volume_only %}<p class="note">柔性袋装按声明体积分配，不执行逐包几何验证或最少柜数证明；按顺序利用柜头、设备间和尾部可达落地区；设备顶部按本项目用户确认的许可或既有顶载限值规划；通过分阶段递袋/辅助送袋到达，不要求人员站在袋区。每步检查800mm宽/1800mm高柜门路径，操作尺寸为规划假设，袋装堆高承压及现场工法待确认。设备部分仍保留原几何约束。方案仅作保守体积规划草案。</p>{% else %}<p class="note">说明：V5.8.28沿用V5.7的“候选包络筛选 + 多候选3D启发式消箱 + 完整3D重排 + 静态规划校核”，仍不声称数学全局最优；但高风险方案不再因少箱/少柜而优先于无高风险方案；再比较柜数与复核数量；重心审计同时包含水平偏移与垂直重心高度。OT允许规划顶部超高，但会明确标记为OOG待运输/绑扎复核。</p>{% endif %}
+  </section>
+
+
+  <details class="panel benchmark-panel ui-fold section-fold" id="historyCompare"><summary>历史项目对照</summary><div class="fold-content">
+    <div class="section-head"><div><h2>⑧B 历史项目对照</h2><p>记录已完成项目的实际结果与当时软件规划值，用于人工比较误差；当前求解器不会自动读取这些记录进行校准。</p></div><a class="ghost-btn" href="/benchmark-template.csv">下载历史对照模板</a></div>
+    <form action="/benchmark/save" method="post" enctype="multipart/form-data" class="smart-grid compact-grid">
+      <label><span>项目名称</span><input name="project_name" required></label><label><span>实际木箱数</span><input name="actual_crates" type="number" min="0" required></label><label><span>实际柜数</span><input name="actual_containers" type="number" min="0" required></label><label><span>实际木箱CBM</span><input name="actual_cbm" type="number" min="0" step="0.001"></label><label><span>实际箱皮重kg</span><input name="actual_tare_kg" type="number" min="0" step="0.1"></label><label><span>实际记录凭证</span><input name="evidence" type="file" required></label><label><span>备注</span><input name="note" placeholder="实际包装日期/现场差异"></label><button class="smart-run" type="submit">保存历史项目对照</button>
+    </form>
+    {% if benchmark_records %}<div class="table-wrap"><table><thead><tr><th>项目</th><th>实际箱/柜</th><th>软件箱/柜</th><th>实际CBM/软件CBM</th><th>实际皮重/软件皮重</th><th>凭证</th><th>时间</th></tr></thead><tbody>{% for b in benchmark_records %}<tr><td>{{ b.project_name }}</td><td>{{ b.actual_crates }}/{{ b.actual_containers }}</td><td>{{ b.planner_crates }}/{{ b.planner_containers }}</td><td>{{ b.actual_cbm|round(3) }}/{{ b.planner_cbm|round(3) }}</td><td>{{ b.actual_tare_kg|round(1) }}/{{ b.planner_tare_kg|round(1) }}</td><td>{% if b.evidence_id %}<a href="/evidence/{{ b.evidence_id }}">查看</a>{% endif %}</td><td>{{ b.created_at }}</td></tr>{% endfor %}</tbody></table></div>{% endif %}
+  </div></details>
+
+  {% if vehicle_mode!='truck' %}<details class="panel ui-fold section-fold" id="containerParameters"><summary>实柜参数与地板限值 <small>当前实柜参数和地板限值仍参与计算</small></summary><div class="fold-content">
+    <div class="section-head"><div><h2>⑨A 集装箱参数单一真源</h2><p>求解器、页面展示、规范参数SHA和装柜数据对照门禁全部读取同一个严格参数对象。项目实柜文件一旦存在但损坏，系统停止集装箱规划，不会静默退回软件典型柜。</p></div><span class="smart-badge">V5.8.28</span></div>
+    <form method="post" action="/container-specs/upload" enctype="multipart/form-data" class="inline-form"><label>实际/项目柜计算参数CSV<input type="file" name="file" accept=".csv" required></label><input name="reference_no" placeholder="系统记录：箱号/订舱号/箱证编号" required><input name="evidence_reference_no" placeholder="凭证上人工核对的同一编号" required><label>箱证/订舱/船公司凭证<input type="file" name="support_evidence" accept=".pdf,.jpg,.jpeg,.png,.webp,.xlsx,.csv,.docx,.txt" required></label><input name="evidence_note" placeholder="船公司/资料来源"><button type="submit">启用实柜参数并绑定凭证</button><a class="ghost-action" href="/container-spec-template.csv">下载模板</a></form>
+    <form method="post" action="/container-specs/reset" class="inline-form"><button type="submit" class="ghost-action">明确切换为标准柜规划</button></form>
+    {% if container_specs_state.mode == 'actual' %}<div class="alert success"><strong>当前参数源：实柜/项目参数。</strong> 求解器当前使用的规范参数 SHA：<code>{{ container_specs_state.sha256[:16] }}…</code>。{% if container_specs_meta.evidence_id %}凭证：<a href="/evidence/{{ container_specs_meta.evidence_id }}">查看</a>{% endif %}</div>
+    {% elif container_specs_state.mode == 'invalid' %}<div class="alert error"><strong>当前实柜参数无效，集装箱规划已停止：</strong>{{ container_specs_state.error }}。请重新上传正确参数，或点击“明确切换为标准柜规划”。系统不会自动回退20GP/40GP/40HQ。</div>
+    {% else %}<div class="alert warn"><strong>当前参数源：标准柜规划。</strong> 正在使用软件内置典型柜参数，仅用于规划；装柜数据对照版与整票数据对照归档包必须重新上传实际/项目柜参数并绑定凭证。</div>{% endif %}
+    <p class="note">OT使用显式 open_top 属性。可在实际柜CSV增加 floor_load_kg_m2（kg/m²）；该字段在V5.8.28仍仅表示“项目静态平均有效接触压力限值”，不是局部点载/横梁承载。木箱接触面积可按整底面、滑木或自定义有效面积录入。凭证编号与参数由责任人查看原文件后人工录入；软件未自动读取箱证正文。V5.8.28 的“单一真源”只保证当前求解器使用的柜参数与登记参数是同一组数据，不代表船公司/箱证内容已被软件自动核验。</p>
+  </div></details>
+  {% endif %}
+  <section id="containerPreview" class="panel viewer-panel">
+    <div class="section-head"><div><h2>{{ '装车' if vehicle_mode=='truck' else '装柜' }}预览与位置微调</h2><p>系统先自动排布；支持鼠标自由旋转/缩放/平移查看，并可选择货物后沿 X / Y / Z 方向微调。</p><p class="note"><b>V5.8.28状态语义：</b>不通过=硬约束失败；高风险=禁止数据对照输出；需复核=可带明确标记输出并由责任人继续处理；信息提示=不阻断。</p></div><div class="viewer-toolbar"><select id="schemeSelect"></select><select id="containerSelect"></select><select id="exportMode"><option value="planning">规划版（DRAFT）</option><option value="formal">装柜数据对照版（实柜参数+人工凭证值对照）</option></select><button type="button" class="ghost-action" id="resetLayoutBtn">恢复自动排布</button><button type="button" class="ghost-action" id="saveLayoutBtn">保存并后端复核</button><button type="button" class="ghost-action" id="exportSvgBtn">导出装柜图</button><button type="button" class="ghost-action" id="exportLayoutWordBtn" title="导出当前方案全部集装箱的四视图和清单">装箱排布导出（Word）</button><button type="button" class="ghost-action load-list-btn" id="exportContainerListBtn">当前{{ '车' if vehicle_mode=='truck' else '柜' }}装载清单</button><button type="button" class="ghost-action load-list-btn" id="exportAllContainerListBtn">全部{{ '车' if vehicle_mode=='truck' else '柜' }}装载清单</button><button type="button" class="ghost-action load-list-btn unloaded-toolbar-btn" id="exportUnloadedListBtn">未进集装箱清单</button></div></div>
+    {% if rec.options %}<div id="viewerSummary" class="viewer-summary"></div><div class="container-orbit-toolbar"><div class="view-switch" aria-label="装载预览四视图"><button type="button" class="view-btn active" data-container-view="perspective">三维</button><button type="button" class="view-btn" data-container-view="top">俯视</button><button type="button" class="view-btn" data-container-view="front">侧视</button><button type="button" class="view-btn" data-container-view="side">端视</button><button type="button" class="view-btn view-reset-btn" id="containerViewReset">复位</button></div><div class="orbit-help">左键拖动旋转 · 滚轮缩放 · Shift+左键/右键拖动平移 · 双击复位</div></div><div class="lifting-controls"><label><input type="checkbox" id="showLifting" checked> 显示吊点与吊索示意</label><label>最小吊索水平夹角 <input id="liftingAngle" type="number" min="20" max="80" value="60"> °</label><label>吊点内缩 <input id="liftingSetback" type="number" min="5" max="40" value="10"> %</label><label>显示重量不低于 <input id="liftingMinWeight" type="number" min="0" value="500"> kg</label><span id="liftingInputStatus" role="status"></span></div><div class="layout-workbench"><div><div id="viewerCanvas" class="viewer-canvas">正在生成三维摆放图…</div><div id="legendWrap" class="legend-wrap"></div></div><aside class="edit-panel"><h3>货物位置微调</h3><div id="selectedCargo" class="selected-cargo">点击3D图中的货物或图例</div><label>移动步长<select id="moveStep"><option value="50">50 mm</option><option value="100" selected>100 mm</option><option value="250">250 mm</option><option value="500">500 mm</option></select></label><div class="axis-title">长度方向 X</div><div class="move-row"><button type="button" data-axis="x" data-dir="-1">X−</button><button type="button" data-axis="x" data-dir="1">X+</button></div><div class="axis-title">宽度方向 Y</div><div class="move-row"><button type="button" data-axis="y" data-dir="-1">Y−</button><button type="button" data-axis="y" data-dir="1">Y+</button></div><div class="axis-title">垂直方向 Z</div><div class="move-row"><button type="button" data-axis="z" data-dir="-1">Z−</button><button type="button" data-axis="z" data-dir="1">Z+</button></div><div id="layoutStatus" class="layout-status ok">当前方案正在执行边界 / 碰撞 / 支撑 / 顶载 / 三向重心检查。</div><div id="coordinateBox" class="coordinate-box">位置：—</div></aside></div><section id="liftingPanel" class="lifting-panel"><div class="lifting-heading"><div><h3>吊点与吊索包络图</h3><p>假定顶部四吊点 · 与当前柜内坐标同步 · 规划示意，吊点未确认</p></div><button type="button" class="ghost-action" id="exportLiftingBtn">导出中文吊点图（SVG）</button></div><div id="liftingCanvas" class="lifting-canvas"></div><p id="liftingContainerNote" class="lifting-note"></p><div class="lifting-table-wrap"><table class="lifting-table"><thead><tr><th>货物编号 / 名称</th><th>重量</th><th>重心来源</th><th>吊钩高度 Z</th><th>与柜内净高对照</th><th>吊点状态</th></tr></thead><tbody id="liftingRows"></tbody></table></div><p class="lifting-note">橙线：假定吊索；白点：假定吊点；黄点：单件重心；红星：货物合成重心。Z 从{{ '货台面' if vehicle_mode=='truck' else '柜底' }}计，尺寸单位为 mm。吊点位置按货物包络假定，未读取厂家吊耳图；未计算吊索张力、动载及吊耳强度。此图不得作为吊装施工依据。</p></section><p class="note"><b>V5.8.28约束语义：</b>X/Y/Z 微调属于真实装柜坐标修改；一旦修改，服务器同步标记“未保存草稿”。装柜数据对照版：硬失败/高风险禁止导出；工程复核未关闭时仍可归档，但文件名强制包含“工程复核未关闭_NOT_FOR_RELEASE”；信息提示不拦截。参数源仍必须有效，且不得存在未保存/失效手调；规划版文件明确标记 DRAFT / 非签证依据。软件中的“静态规划校核”与“工程输入凭证一致性”必须分开阅读；前者不替代后者，两者都不替代结构、绑扎、吊装、运输或发运签字。</p>{% else %}<div class="empty">完成材料与木箱配置后，这里会出现3D装柜图。</div>{% endif %}
+  </section>
+</div>
+<script id="crate-layout-data" type="application/json">{{ crate_layout_data_json | safe }}</script>
+<script id="layout-data" type="application/json">{{ layout_data_json | safe }}</script>
+<script src="/static/lifting.js?v=5.8.28"></script>
+<script src="/static/app.js?v=5.8.28"></script>
+<script src="/static/selected-fleet.js?v=5.8.28"></script>
+<script src="/static/compact-ui.js?v=5.8.28"></script>
+</body>
+</html>

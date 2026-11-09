@@ -1,0 +1,38 @@
+name: 报告错误 / Bug report
+description: 提交可复现的导入、计算、显示或导出问题
+title: "[Bug] "
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: 版本与环境
+      description: 程序版本、操作系统、Python版本、浏览器。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 最小输入与复现步骤
+      description: 使用虚构或脱敏数据；注明替换/追加、自动/手工映射和数量单位。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果及独立计算依据
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 如有截图，遮盖客户名称、合同号和账号。
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 提交前核对
+      options:
+        - label: 未包含真实客户箱单、合同、数据库、现场凭证或账号密钥。
+          required: true

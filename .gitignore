@@ -1,0 +1,22 @@
+# Never publish working cargo, approvals, evidence, exports or local runtimes.
+/data/
+/.venv/
+/venv/
+/node_modules/
+/__pycache__/
+**/__pycache__/
+*.py[cod]
+*.db
+*.sqlite*
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+/backups/
+/outputs/
+/恢复备份/
+/最终导出/
+/目录整理记录.json
+*.pem
+*.key

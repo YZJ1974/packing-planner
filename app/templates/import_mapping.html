@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>材料字段映射</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><div class="shell">
+<header><div><h1>材料清单字段映射</h1><p>{{ filename }} · 工作表：{{ sheet }}</p></div><div class="badge">V1.5 · 导入修正</div></header>
+<div class="alert mapping-info"><strong>{{ reason }}</strong><br>下面已经尽量预选系统识别到的列。你只需要检查错误的地方。</div>
+<section class="panel">
+<form action="/confirm-import" method="post" id="mappingForm">
+<input type="hidden" name="token" value="{{ token }}">
+<div class="mapping-grid">
+  <label><span>数据从第几行开始</span><input type="number" name="data_start" min="1" value="{{ data_start }}" required></label>
+  {% set fields = [('name','name_col','物料/货物名称 *'),('qty','qty_col','数量'),('size','size_col','外形/包装尺寸'),('length_mm','length_col','长度 mm'),('width_mm','width_col','宽度 mm'),('height_mm','height_col','高度 mm'),('weight_kg','weight_col','单件重量 kg'),('total_weight_kg','total_weight_col','总重量 kg'),('package_type','package_col','包装方式'),('stackable','stackable_col','可叠放'),('rotatable','rotatable_col','可旋转')] %}
+  {% for field,input_name,label in fields %}
+  <label><span>{{ label }}</span><select name="{{ input_name }}" {% if field=='name' %}required{% endif %}><option value="">— 不指定 —</option>{% for h in headers %}<option value="{{h.idx}}" {% if detected.get(field)==h.idx %}selected{% endif %}>{{h.col}}列 · {{h.label}}</option>{% endfor %}</select></label>
+  {% endfor %}
+</div>
+<div class="mapping-help"><b>尺寸有两种选法：</b>如果清单里有“3200×1800×1600”这种一列尺寸，就只选“外形/包装尺寸”；如果是三列，就分别选择长、宽、高。<br><b>重量也只需一种：</b>单件重量或总重量任选其一即可。</div>
+<div class="mapping-actions"><a href="/" class="ghost-btn">取消返回</a><button type="submit">确认映射并导入</button></div>
+</form>
+</section>
+<section class="panel"><h2>数据预览</h2><div class="table-wrap"><table class="preview-table"><thead><tr><th>Excel行</th>{% for h in headers %}<th>{{h.col}}<br><small>{{h.label}}</small></th>{% endfor %}</tr></thead><tbody>{% for r in preview %}<tr><td>{{r.row_no}}</td>{% for v in r["values"] %}<td>{{v if v is not none else ''}}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div></section>
+</div></body></html>

@@ -1,0 +1,9 @@
+{
+  "name": "packing-planner",
+  "private": true,
+  "version": "5.8.28",
+  "description": "Optional SVG rasterizer for Word loading reports",
+  "dependencies": {
+    "sharp": "0.35.5"
+  }
+}
